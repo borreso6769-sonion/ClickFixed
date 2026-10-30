@@ -8,8 +8,8 @@
 	},
 	"id": "borreso6769-sonion.click-fixed",
 	"name": "Click Fixed",
-	"version": "v1.0.0",
+	"version": "v1.1.0",
 	"developer": "borreso6769-sonion",
-	"description": "Experimental practice assist. If your click would make you die, it is delayed a few frames until it survives. Press I in a level to open the menu.",
+	"description": "Experimental practice assist. If your click would make you die, it is delayed a few frames until it survives. Press I in a level to open the menu (FPS, Fixed Jump Yes/No and Advantage).",
 	"tags": ["gameplay", "utility"]
 }
