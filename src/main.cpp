@@ -2,6 +2,7 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
+#include <Geode/modify/GJGameLevel.hpp>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -36,7 +37,8 @@ namespace cf {
     };
 
     // Fixed Jump se apaga solo mientras NoBot esta reproduciendo (para no interferir con el bot)
-    inline bool enabled() { return Mod::get()->getSavedValue<bool>("fixed-jump", true) && !nobot::playbackActive(); }
+    inline bool savedEnabled() { return Mod::get()->getSavedValue<bool>("fixed-jump", true); }
+    inline bool enabled() { return savedEnabled() && !nobot::playbackActive(); }
 
     // Ventaja: cuantos cuadros (a 240 por segundo) antes de tiempo puedes dar el click y aun asi te lo corrige
     inline int advantage() { return std::clamp(Mod::get()->getSavedValue<int>("advantage-frames", 6), MIN_ADV, MAX_ADV); }
@@ -121,6 +123,7 @@ protected:
     CCLabelBMFont* m_adv = nullptr;
     CCLabelBMFont* m_hint = nullptr;
     CCLabelBMFont* m_grace = nullptr;
+    ButtonSprite* m_safeSpr = nullptr;
     Slider* m_slider = nullptr;
     float m_acc = 0.f;
     int m_frames = 0;
@@ -134,43 +137,48 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(300.f, 330.f)) return false;
+        if (!Popup::init(300.f, 310.f)) return false;
         this->setTitle("Click Fixed");
 
-        m_fps = makeLabel("Your FPS: --", 100.f, 0.5f);
+        m_fps = makeLabel("Your FPS: --", 106.f, 0.5f);
         m_fps->setColor({255, 225, 90});
 
-        makeLabel("Fixed Jump", 64.f, 0.6f);
-        m_spr = ButtonSprite::create(cf::enabled() ? "Yes" : "No", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, 0.8f);
+        makeLabel("Fixed Jump", 80.f, 0.55f);
+        m_spr = ButtonSprite::create(cf::savedEnabled() ? "Yes" : "No", 80, true, "bigFont.fnt", "GJ_button_01.png", 28.f, 0.75f);
         auto btn = CCMenuItemSpriteExtra::create(m_spr, this, menu_selector(MenuPopup::onToggle));
-        m_buttonMenu->addChildAtPosition(btn, Anchor::Center, {0.f, 32.f});
+        m_buttonMenu->addChildAtPosition(btn, Anchor::Center, {0.f, 56.f});
 
-        makeLabel("Advantage", -6.f, 0.6f);
+        makeLabel("Advantage", 28.f, 0.55f);
         m_slider = Slider::create(this, menu_selector(MenuPopup::onAdv), 0.7f);
         m_slider->setValue(static_cast<float>(cf::advantage() - cf::MIN_ADV) / (cf::MAX_ADV - cf::MIN_ADV));
-        m_mainLayer->addChildAtPosition(m_slider, Anchor::Center, {0.f, -34.f});
+        m_mainLayer->addChildAtPosition(m_slider, Anchor::Center, {0.f, 6.f});
 
         auto minusSpr = ButtonSprite::create("-", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
         auto minusBtn = CCMenuItemSpriteExtra::create(minusSpr, this, menu_selector(MenuPopup::onMinus));
-        m_buttonMenu->addChildAtPosition(minusBtn, Anchor::Center, {-118.f, -34.f});
+        m_buttonMenu->addChildAtPosition(minusBtn, Anchor::Center, {-118.f, 6.f});
 
         auto plusSpr = ButtonSprite::create("+", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
         auto plusBtn = CCMenuItemSpriteExtra::create(plusSpr, this, menu_selector(MenuPopup::onPlus));
-        m_buttonMenu->addChildAtPosition(plusBtn, Anchor::Center, {118.f, -34.f});
+        m_buttonMenu->addChildAtPosition(plusBtn, Anchor::Center, {118.f, 6.f});
 
-        m_adv = makeLabel("", -66.f, 0.5f);
-        m_hint = makeLabel("", -90.f, 0.38f);
+        m_adv = makeLabel("", -14.f, 0.5f);
+        m_hint = makeLabel("", -28.f, 0.36f);
         m_hint->setOpacity(190);
 
-        makeLabel("NoBot grace", -118.f, 0.55f);
+        makeLabel("NoBot grace", -52.f, 0.55f);
         auto gMinusSpr = ButtonSprite::create("-", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
         auto gMinusBtn = CCMenuItemSpriteExtra::create(gMinusSpr, this, menu_selector(MenuPopup::onGraceMinus));
-        m_buttonMenu->addChildAtPosition(gMinusBtn, Anchor::Center, {-80.f, -146.f});
+        m_buttonMenu->addChildAtPosition(gMinusBtn, Anchor::Center, {-100.f, -76.f});
         auto gPlusSpr = ButtonSprite::create("+", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
         auto gPlusBtn = CCMenuItemSpriteExtra::create(gPlusSpr, this, menu_selector(MenuPopup::onGracePlus));
-        m_buttonMenu->addChildAtPosition(gPlusBtn, Anchor::Center, {80.f, -146.f});
-        m_grace = makeLabel("", -146.f, 0.5f);
+        m_buttonMenu->addChildAtPosition(gPlusBtn, Anchor::Center, {100.f, -76.f});
+        m_grace = makeLabel("", -76.f, 0.5f);
         this->refreshGrace();
+
+        makeLabel("Safe Mode (saves nothing)", -102.f, 0.5f);
+        m_safeSpr = ButtonSprite::create(nobot::safeMode() ? "Yes" : "No", 80, true, "bigFont.fnt", "GJ_button_01.png", 28.f, 0.75f);
+        auto safeBtn = CCMenuItemSpriteExtra::create(m_safeSpr, this, menu_selector(MenuPopup::onSafe));
+        m_buttonMenu->addChildAtPosition(safeBtn, Anchor::Center, {0.f, -126.f});
 
         this->refreshAdv();
         this->scheduleUpdate();
@@ -217,8 +225,14 @@ protected:
     void onMinus(CCObject*) { this->setAdv(cf::advantage() - 1); }
     void onPlus(CCObject*) { this->setAdv(cf::advantage() + 1); }
 
+    void onSafe(CCObject*) {
+        bool v = !nobot::safeMode();
+        Mod::get()->setSavedValue<bool>("safe-mode", v);
+        m_safeSpr->setString(v ? "Yes" : "No");
+    }
+
     void onToggle(CCObject*) {
-        bool v = !cf::enabled();
+        bool v = !cf::savedEnabled();
         Mod::get()->setSavedValue<bool>("fixed-jump", v);
         m_spr->setString(v ? "Yes" : "No");
         if (!v) cf::reset();
@@ -269,6 +283,16 @@ class $modify(CFKeyboardDispatcher, CCKeyboardDispatcher) {
             }
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
+    }
+};
+
+// =====================================================================
+//  Modo seguro: no se guarda el porcentaje / progreso del nivel
+// =====================================================================
+class $modify(CFGameLevel, GJGameLevel) {
+    void savePercentage(int percent, bool isPracticeMode, int clicks, int attempts, bool isChkValid) {
+        if (nobot::safeMode() && PlayLayer::get()) return;
+        GJGameLevel::savePercentage(percent, isPracticeMode, clicks, attempts, isChkValid);
     }
 };
 
@@ -338,6 +362,7 @@ class $modify(CFPlayLayer, PlayLayer) {
         CCLabelBMFont* nbLabel = nullptr;
         std::string nbLastText;
         std::string nbKey;
+        bool nbSafePending = false;
     };
 
     // ---- NoBot: boton arriba a la derecha ----
@@ -431,7 +456,24 @@ class $modify(CFPlayLayer, PlayLayer) {
             nobot::saveClicks(m_fields->nbKey);
             nobot::g_justSaved = true;
         }
+
+        // Modo seguro: en modo normal no se completa el nivel (no da nada), se reinicia
+        if (nobot::safeMode() && !m_isPracticeMode) {
+            if (m_fields->nbSafePending) return;
+            m_fields->nbSafePending = true;
+            Notification::create("Safe Mode: nothing was saved", NotificationIcon::Info, 2.f)->show();
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(0.4f),
+                CCCallFunc::create(this, callfunc_selector(CFPlayLayer::nbSafeRestart)),
+                nullptr));
+            return;
+        }
         PlayLayer::levelComplete();
+    }
+
+    void nbSafeRestart() {
+        m_fields->nbSafePending = false;
+        this->resetLevel();
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
@@ -471,6 +513,7 @@ class $modify(CFPlayLayer, PlayLayer) {
 
     void resetLevel() {
         cf::reset();
+        m_fields->nbSafePending = false;
         PlayLayer::resetLevel();
 
         // NoBot: tras reiniciar / volver a un checkpoint
