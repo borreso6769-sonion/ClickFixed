@@ -62,6 +62,9 @@ namespace nobot {
         return std::clamp(Mod::get()->getSavedValue<double>("nobot-grace", GRACE_DEFAULT), 0.1, 3.0);
     }
 
+    // Modo seguro: no se guarda nada (completar nivel, porcentaje, estrellas, orbes...)
+    inline bool safeMode() { return Mod::get()->getSavedValue<bool>("safe-mode", true); }
+
     inline bool recordMode(PlayLayer* pl) { return g_enabled && pl && pl->m_isPracticeMode; }
     inline bool playbackMode(PlayLayer* pl) {
         return g_enabled && pl && !pl->m_isPracticeMode && !g_clicks.empty();
