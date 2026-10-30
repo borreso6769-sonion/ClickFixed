@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include "nobot.hpp"
 
 using namespace geode::prelude;
 
@@ -34,7 +35,8 @@ namespace cf {
         bool down;
     };
 
-    inline bool enabled() { return Mod::get()->getSavedValue<bool>("fixed-jump", true); }
+    // Fixed Jump se apaga solo mientras NoBot esta reproduciendo (para no interferir con el bot)
+    inline bool enabled() { return Mod::get()->getSavedValue<bool>("fixed-jump", true) && !nobot::playbackActive(); }
 
     // Ventaja: cuantos cuadros (a 240 por segundo) antes de tiempo puedes dar el click y aun asi te lo corrige
     inline int advantage() { return std::clamp(Mod::get()->getSavedValue<int>("advantage-frames", 6), MIN_ADV, MAX_ADV); }
@@ -118,6 +120,7 @@ protected:
     CCLabelBMFont* m_fps = nullptr;
     CCLabelBMFont* m_adv = nullptr;
     CCLabelBMFont* m_hint = nullptr;
+    CCLabelBMFont* m_grace = nullptr;
     Slider* m_slider = nullptr;
     float m_acc = 0.f;
     int m_frames = 0;
@@ -131,7 +134,7 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(300.f, 280.f)) return false;
+        if (!Popup::init(300.f, 330.f)) return false;
         this->setTitle("Click Fixed");
 
         m_fps = makeLabel("Your FPS: --", 100.f, 0.5f);
@@ -158,6 +161,16 @@ protected:
         m_adv = makeLabel("", -66.f, 0.5f);
         m_hint = makeLabel("", -90.f, 0.38f);
         m_hint->setOpacity(190);
+
+        makeLabel("NoBot grace", -118.f, 0.55f);
+        auto gMinusSpr = ButtonSprite::create("-", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
+        auto gMinusBtn = CCMenuItemSpriteExtra::create(gMinusSpr, this, menu_selector(MenuPopup::onGraceMinus));
+        m_buttonMenu->addChildAtPosition(gMinusBtn, Anchor::Center, {-80.f, -146.f});
+        auto gPlusSpr = ButtonSprite::create("+", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
+        auto gPlusBtn = CCMenuItemSpriteExtra::create(gPlusSpr, this, menu_selector(MenuPopup::onGracePlus));
+        m_buttonMenu->addChildAtPosition(gPlusBtn, Anchor::Center, {80.f, -146.f});
+        m_grace = makeLabel("", -146.f, 0.5f);
+        this->refreshGrace();
 
         this->refreshAdv();
         this->scheduleUpdate();
@@ -188,6 +201,18 @@ protected:
         Mod::get()->setSavedValue<int>("advantage-frames", adv);
         this->refreshAdv();
     }
+
+    void refreshGrace() {
+        m_grace->setString(fmt::format("{:.1f} s without clicking", nobot::graceTime()).c_str());
+    }
+
+    void setGrace(double v) {
+        Mod::get()->setSavedValue<double>("nobot-grace", std::clamp(v, 0.1, 3.0));
+        this->refreshGrace();
+    }
+
+    void onGraceMinus(CCObject*) { this->setGrace(std::round((nobot::graceTime() - 0.1) * 10.0) / 10.0); }
+    void onGracePlus(CCObject*) { this->setGrace(std::round((nobot::graceTime() + 0.1) * 10.0) / 10.0); }
 
     void onMinus(CCObject*) { this->setAdv(cf::advantage() - 1); }
     void onPlus(CCObject*) { this->setAdv(cf::advantage() + 1); }
@@ -251,8 +276,45 @@ class $modify(CFKeyboardDispatcher, CCKeyboardDispatcher) {
 //  Clicks del jugador 1
 // =====================================================================
 class $modify(CFBaseGameLayer, GJBaseGameLayer) {
+    // NoBot: se llama en cada paso de fisica (240 por segundo)
+    void processCommands(float dt) {
+        auto pl = typeinfo_cast<PlayLayer*>(this);
+        if (pl && nobot::g_enabled) {
+            nobot::g_stepProgress = static_cast<int>(m_gameState.m_currentProgress);
+            if (nobot::playbackMode(pl)) nobot::injectPlayback(this, nobot::g_stepProgress);
+            nobot::g_inProcess = true;
+            GJBaseGameLayer::processCommands(dt);
+            nobot::g_inProcess = false;
+            return;
+        }
+        GJBaseGameLayer::processCommands(dt);
+    }
+
     void handleButton(bool down, int button, bool isPlayer1) {
         auto pl = typeinfo_cast<PlayLayer*>(this);
+
+        // ---- NoBot ----
+        if (pl && nobot::g_enabled && !nobot::g_injecting) {
+            int progress = static_cast<int>(m_gameState.m_currentProgress);
+            if (nobot::g_inProcess) nobot::g_delta = progress - nobot::g_stepProgress;
+
+            // click del jugador: cuenta como "esta jugando"
+            nobot::g_realHeld[nobot::keyOf(button, isPlayer1)] = down;
+            if (down) {
+                nobot::g_lastClick = std::chrono::steady_clock::now();
+                nobot::g_hasClicked = true;
+            }
+
+            // reproduciendo: tu click NO controla nada, lo hace el bot
+            if (nobot::playbackMode(pl)) return;
+
+            if (nobot::recordMode(pl)) {
+                int frame = nobot::g_inProcess ? progress : progress + nobot::g_delta;
+                nobot::g_rec.push_back({frame, button, down, isPlayer1});
+            }
+        }
+
+        // ---- Click Fixed (igual que antes) ----
         if (!pl || cf::injecting || !cf::enabled() || button != 1 || !isPlayer1) {
             GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
@@ -271,6 +333,107 @@ class $modify(CFBaseGameLayer, GJBaseGameLayer) {
 //  Muerte, rebobinado y ciclo de vida
 // =====================================================================
 class $modify(CFPlayLayer, PlayLayer) {
+    struct Fields {
+        CCMenuItemSpriteExtra* nbBtn = nullptr;
+        CCLabelBMFont* nbLabel = nullptr;
+        std::string nbLastText;
+        std::string nbKey;
+    };
+
+    // ---- NoBot: boton arriba a la derecha ----
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+
+        m_fields->nbKey = nobot::levelKey(this);
+        nobot::g_enabled = Mod::get()->getSavedValue<bool>("nobot-enabled", false);
+        nobot::g_rec.clear();
+        nobot::g_justSaved = false;
+        nobot::loadClicks(m_fields->nbKey);
+        nobot::resetRuntime();
+        nobot::primePlayback(0);
+
+        auto winSize = CCDirector::get()->getWinSize();
+
+        auto spr = ButtonSprite::create("NoBot", 70, true, "bigFont.fnt", "GJ_button_04.png", 22.f, 0.55f);
+        auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(CFPlayLayer::onNoBot));
+        btn->setID("nobot-button"_spr);
+        // Si choca con el boton de pausa, mueve estas coordenadas
+        btn->setPosition({winSize.width - 80.f, winSize.height - 24.f});
+
+        auto menu = CCMenu::create();
+        menu->setID("nobot-menu"_spr);
+        menu->setPosition({0.f, 0.f});
+        menu->addChild(btn);
+        m_uiLayer->addChild(menu, 100);
+        m_fields->nbBtn = btn;
+
+        auto label = CCLabelBMFont::create("", "bigFont.fnt");
+        label->setID("nobot-label"_spr);
+        label->setScale(0.35f);
+        label->setPosition({winSize.width - 80.f, winSize.height - 44.f});
+        m_uiLayer->addChild(label, 100);
+        m_fields->nbLabel = label;
+    }
+
+    void onNoBot(CCObject*) {
+        nobot::g_enabled = !nobot::g_enabled;
+        Mod::get()->setSavedValue<bool>("nobot-enabled", nobot::g_enabled);
+
+        if (!nobot::g_enabled) nobot::releaseAll(this);
+        cf::reset();
+        nobot::g_realHeld.clear();
+        nobot::primePlayback(static_cast<int>(m_gameState.m_currentProgress));
+
+        Notification::create(
+            nobot::g_enabled ? "NoBot: ON" : "NoBot: OFF",
+            nobot::g_enabled ? NotificationIcon::Success : NotificationIcon::Info,
+            1.f)->show();
+    }
+
+    void nbRefreshLabel() {
+        if (!m_fields->nbLabel) return;
+
+        std::string text = "NoBot OFF";
+        ccColor3B col = {150, 150, 150};
+
+        if (nobot::g_enabled) {
+            if (m_isPracticeMode) {
+                if (nobot::g_justSaved) {
+                    text = "REC SAVED";
+                    col = {80, 255, 120};
+                } else {
+                    text = fmt::format("REC {}", nobot::g_rec.size());
+                    col = {255, 80, 80};
+                }
+            } else if (nobot::g_clicks.empty()) {
+                text = "NO RECORDING";
+                col = {170, 170, 170};
+            } else if (nobot::playerIsActive()) {
+                text = "BOT ON";
+                col = {80, 255, 120};
+            } else {
+                text = "KEEP CLICKING!";
+                col = {255, 200, 40};
+            }
+        }
+
+        if (text != m_fields->nbLastText) {
+            m_fields->nbLastText = text;
+            m_fields->nbLabel->setString(text.c_str());
+            m_fields->nbLabel->setColor(col);
+        }
+    }
+
+    // Completar el nivel en practica con NoBot ON -> confirma y guarda la grabacion
+    void levelComplete() {
+        if (nobot::recordMode(this) && !nobot::g_rec.empty()) {
+            nobot::g_clicks = nobot::g_rec;
+            nobot::saveClicks(m_fields->nbKey);
+            nobot::g_justSaved = true;
+        }
+        PlayLayer::levelComplete();
+    }
+
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         if (cf::active && cf::enabled() && cf::base && player == m_player1
             && object != m_anticheatSpike && cf::attempts < cf::advantage()) {
@@ -283,6 +446,7 @@ class $modify(CFPlayLayer, PlayLayer) {
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+        this->nbRefreshLabel();
         if (!cf::active) return;
 
         if (cf::rewindPending) {
@@ -308,10 +472,20 @@ class $modify(CFPlayLayer, PlayLayer) {
     void resetLevel() {
         cf::reset();
         PlayLayer::resetLevel();
+
+        // NoBot: tras reiniciar / volver a un checkpoint
+        int frame = static_cast<int>(m_gameState.m_currentProgress);
+        nobot::g_realHeld.clear();
+        if (nobot::recordMode(this)) {
+            nobot::truncateAt(frame);
+            nobot::g_justSaved = false;
+        }
+        nobot::primePlayback(frame);
     }
 
     void onQuit() {
         cf::reset();
+        nobot::resetRuntime();
         PlayLayer::onQuit();
     }
 };
