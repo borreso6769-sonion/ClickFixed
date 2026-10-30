@@ -277,17 +277,17 @@ class $modify(CFKeyboardDispatcher, CCKeyboardDispatcher) {
 // =====================================================================
 class $modify(CFBaseGameLayer, GJBaseGameLayer) {
     // NoBot: se llama en cada paso de fisica (240 por segundo)
-    void processCommands(float dt) {
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         auto pl = typeinfo_cast<PlayLayer*>(this);
         if (pl && nobot::g_enabled) {
             nobot::g_stepProgress = static_cast<int>(m_gameState.m_currentProgress);
             if (nobot::playbackMode(pl)) nobot::injectPlayback(this, nobot::g_stepProgress);
             nobot::g_inProcess = true;
-            GJBaseGameLayer::processCommands(dt);
+            GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
             nobot::g_inProcess = false;
             return;
         }
-        GJBaseGameLayer::processCommands(dt);
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
