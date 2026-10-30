@@ -1,0 +1,15 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081",
+		"android": "2.2081",
+		"mac": "2.2081",
+		"ios": "2.2081"
+	},
+	"id": "borreso6769-sonion.click-fixed",
+	"name": "Click Fixed",
+	"version": "v1.0.0",
+	"developer": "borreso6769-sonion",
+	"description": "Experimental practice assist. If your click would make you die, it is delayed a few frames until it survives. Press I in a level to open the menu.",
+	"tags": ["gameplay", "utility"]
+}
