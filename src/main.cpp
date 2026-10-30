@@ -16,15 +16,17 @@ using namespace geode::prelude;
 //     intenta matarte, NO se te mata: se vuelve a la foto y se repite
 //     el click, pero retrasado un poquito mas (1/120 s mas cada intento).
 //  3) El primer retraso con el que sobrevives es el que se queda.
-//  4) Si ningun retraso (hasta ~0.1 s) te salva, mueres normalmente.
+//  4) Si ningun retraso (hasta la "ventaja" que elijas) te salva, mueres.
 //
 //  Solo corrige clicks DEMASIADO TEMPRANOS. Un click tarde no se arregla.
 // =====================================================================
 
 namespace cf {
 
-    inline constexpr double STEP = 1.0 / 120.0;   // cuanto se retrasa en cada intento
-    inline constexpr int MAX_ATTEMPTS = 12;       // 12 * STEP = 0.1 s de retraso maximo
+    inline constexpr double TPS = 240.0;          // pasos de fisica por segundo del juego
+    inline constexpr double STEP = 1.0 / TPS;     // 1 "cuadro" de fisica (4.17 ms)
+    inline constexpr int MIN_ADV = 1;
+    inline constexpr int MAX_ADV = 48;            // 48 cuadros = 0.2 s
     inline constexpr double HORIZON = 0.30;       // cuanto tiempo vigilamos el click
 
     struct Ev {
@@ -33,6 +35,9 @@ namespace cf {
     };
 
     inline bool enabled() { return Mod::get()->getSavedValue<bool>("fixed-jump", true); }
+
+    // Ventaja: cuantos cuadros (a 240 por segundo) antes de tiempo puedes dar el click y aun asi te lo corrige
+    inline int advantage() { return std::clamp(Mod::get()->getSavedValue<int>("advantage-frames", 6), MIN_ADV, MAX_ADV); }
 
     inline bool active = false;          // hay una ventana de vigilancia abierta
     inline bool injecting = false;       // estamos re-enviando clicks nosotros
@@ -72,7 +77,7 @@ namespace cf {
     inline void finish() {
         if (attempts > 0) {
             int ms = static_cast<int>(std::round(attempts * STEP * 1000.0));
-            Notification::create("Jump fixed (+" + std::to_string(ms) + " ms)", NotificationIcon::Success, 0.8f)->show();
+            Notification::create("Jump fixed (+" + std::to_string(attempts) + " frames, " + std::to_string(ms) + " ms)", NotificationIcon::Success, 0.8f)->show();
         }
         reset();
     }
@@ -110,26 +115,101 @@ namespace cf {
 class MenuPopup : public geode::Popup {
 protected:
     ButtonSprite* m_spr = nullptr;
+    CCLabelBMFont* m_fps = nullptr;
+    CCLabelBMFont* m_adv = nullptr;
+    CCLabelBMFont* m_hint = nullptr;
+    Slider* m_slider = nullptr;
+    float m_acc = 0.f;
+    int m_frames = 0;
+    float m_fpsVal = 0.f;
+
+    CCLabelBMFont* makeLabel(char const* text, float y, float scale) {
+        auto lbl = CCLabelBMFont::create(text, "bigFont.fnt");
+        lbl->setScale(scale);
+        m_mainLayer->addChildAtPosition(lbl, Anchor::Center, {0.f, y});
+        return lbl;
+    }
 
     bool init() {
-        if (!Popup::init(230.f, 150.f)) return false;
+        if (!Popup::init(300.f, 280.f)) return false;
         this->setTitle("Click Fixed");
 
-        auto lbl = CCLabelBMFont::create("Fixed Jump", "bigFont.fnt");
-        lbl->setScale(0.6f);
-        m_mainLayer->addChildAtPosition(lbl, Anchor::Center, {0.f, 16.f});
+        m_fps = makeLabel("Your FPS: --", 100.f, 0.5f);
+        m_fps->setColor({255, 225, 90});
 
+        makeLabel("Fixed Jump", 64.f, 0.6f);
         m_spr = ButtonSprite::create(cf::enabled() ? "Yes" : "No", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, 0.8f);
         auto btn = CCMenuItemSpriteExtra::create(m_spr, this, menu_selector(MenuPopup::onToggle));
-        m_buttonMenu->addChildAtPosition(btn, Anchor::Center, {0.f, -26.f});
+        m_buttonMenu->addChildAtPosition(btn, Anchor::Center, {0.f, 32.f});
+
+        makeLabel("Advantage", -6.f, 0.6f);
+        m_slider = Slider::create(this, menu_selector(MenuPopup::onAdv), 0.7f);
+        m_slider->setValue(static_cast<float>(cf::advantage() - cf::MIN_ADV) / (cf::MAX_ADV - cf::MIN_ADV));
+        m_mainLayer->addChildAtPosition(m_slider, Anchor::Center, {0.f, -34.f});
+
+        auto minusSpr = ButtonSprite::create("-", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
+        auto minusBtn = CCMenuItemSpriteExtra::create(minusSpr, this, menu_selector(MenuPopup::onMinus));
+        m_buttonMenu->addChildAtPosition(minusBtn, Anchor::Center, {-118.f, -34.f});
+
+        auto plusSpr = ButtonSprite::create("+", 30, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.8f);
+        auto plusBtn = CCMenuItemSpriteExtra::create(plusSpr, this, menu_selector(MenuPopup::onPlus));
+        m_buttonMenu->addChildAtPosition(plusBtn, Anchor::Center, {118.f, -34.f});
+
+        m_adv = makeLabel("", -66.f, 0.5f);
+        m_hint = makeLabel("", -90.f, 0.38f);
+        m_hint->setOpacity(190);
+
+        this->refreshAdv();
+        this->scheduleUpdate();
         return true;
     }
+
+    void refreshAdv() {
+        int adv = cf::advantage();
+        double ms = adv * 1000.0 / cf::TPS;
+        m_adv->setString(fmt::format("{} frames ({:.1f} ms)", adv, ms).c_str());
+        if (m_fpsVal > 1.f) {
+            m_hint->setString(fmt::format("= {:.1f} frames at your {:.0f} FPS (game runs at 240)", ms * m_fpsVal / 1000.0, m_fpsVal).c_str());
+        } else {
+            m_hint->setString("The game physics runs at 240 frames per second");
+        }
+    }
+
+    void setAdv(int v) {
+        v = std::clamp(v, cf::MIN_ADV, cf::MAX_ADV);
+        Mod::get()->setSavedValue<int>("advantage-frames", v);
+        m_slider->setValue(static_cast<float>(v - cf::MIN_ADV) / (cf::MAX_ADV - cf::MIN_ADV));
+        this->refreshAdv();
+    }
+
+    void onAdv(CCObject* sender) {
+        float v = std::clamp(static_cast<SliderThumb*>(sender)->getValue(), 0.f, 1.f);
+        int adv = cf::MIN_ADV + static_cast<int>(std::round(v * (cf::MAX_ADV - cf::MIN_ADV)));
+        Mod::get()->setSavedValue<int>("advantage-frames", adv);
+        this->refreshAdv();
+    }
+
+    void onMinus(CCObject*) { this->setAdv(cf::advantage() - 1); }
+    void onPlus(CCObject*) { this->setAdv(cf::advantage() + 1); }
 
     void onToggle(CCObject*) {
         bool v = !cf::enabled();
         Mod::get()->setSavedValue<bool>("fixed-jump", v);
         m_spr->setString(v ? "Yes" : "No");
         if (!v) cf::reset();
+    }
+
+    // Muestra los FPS actuales (se actualiza dos veces por segundo)
+    void update(float dt) override {
+        m_acc += dt;
+        m_frames++;
+        if (m_acc >= 0.5f) {
+            m_fpsVal = static_cast<float>(m_frames) / m_acc;
+            m_fps->setString(fmt::format("Your FPS: {:.0f}", m_fpsVal).c_str());
+            m_acc = 0.f;
+            m_frames = 0;
+            this->refreshAdv();
+        }
     }
 
 public:
@@ -171,24 +251,19 @@ class $modify(CFKeyboardDispatcher, CCKeyboardDispatcher) {
 //  Clicks del jugador 1
 // =====================================================================
 class $modify(CFBaseGameLayer, GJBaseGameLayer) {
-    void pushButton(int button, bool isPlayer1) {
+    void handleButton(bool down, int button, bool isPlayer1) {
         auto pl = typeinfo_cast<PlayLayer*>(this);
         if (!pl || cf::injecting || !cf::enabled() || button != 1 || !isPlayer1) {
-            GJBaseGameLayer::pushButton(button, isPlayer1);
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
-        if (!cf::active) cf::begin(pl);
-        if (cf::active && cf::attempts == 0) cf::events.push_back({cf::clock, true});
-        GJBaseGameLayer::pushButton(button, isPlayer1);
-    }
-
-    void releaseButton(int button, bool isPlayer1) {
-        auto pl = typeinfo_cast<PlayLayer*>(this);
-        if (pl && !cf::injecting && cf::enabled() && button == 1 && isPlayer1
-            && cf::active && cf::attempts == 0) {
+        if (down) {
+            if (!cf::active) cf::begin(pl);
+            if (cf::active && cf::attempts == 0) cf::events.push_back({cf::clock, true});
+        } else if (cf::active && cf::attempts == 0) {
             cf::events.push_back({cf::clock, false});
         }
-        GJBaseGameLayer::releaseButton(button, isPlayer1);
+        GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 };
 
@@ -198,7 +273,7 @@ class $modify(CFBaseGameLayer, GJBaseGameLayer) {
 class $modify(CFPlayLayer, PlayLayer) {
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         if (cf::active && cf::enabled() && cf::base && player == m_player1
-            && object != m_anticheatSpike && cf::attempts < cf::MAX_ATTEMPTS) {
+            && object != m_anticheatSpike && cf::attempts < cf::advantage()) {
             // No te matamos: se rebobina al terminar este frame y se prueba un retraso mayor
             cf::rewindPending = true;
             return;
@@ -222,8 +297,7 @@ class $modify(CFPlayLayer, PlayLayer) {
                && cf::schedule[cf::nextSched].t <= cf::clock) {
             auto e = cf::schedule[cf::nextSched++];
             cf::injecting = true;
-            if (e.down) static_cast<GJBaseGameLayer*>(this)->pushButton(1, true);
-            else        static_cast<GJBaseGameLayer*>(this)->releaseButton(1, true);
+            static_cast<GJBaseGameLayer*>(this)->handleButton(e.down, 1, true);
             cf::injecting = false;
         }
 
